@@ -29,16 +29,35 @@ class Schema
     /** @var Collection|Action[] */
     protected $actions;
 
-    /** @var array */
-    protected $raw, $overrides;
+    protected bool $DefaultChangeTracking;
+    protected bool $DefaultDeleteRestrictions;
+    protected bool $DefaultUpdateRestrictions;
+    protected bool $DefaultInsertRestrictions;
 
-    public function __construct(array $json)
+    /** @var array */
+    protected $raw = [], $overrides;
+
+    public function __construct(
+        array $json,
+        bool $DefaultChangeTracking = false,
+        bool $DefaultDeleteRestrictions = false,
+        bool $DefaultUpdateRestrictions = false,
+        bool $DefaultInsertRestrictions = false
+    )
     {
+        $this->DefaultChangeTracking = $DefaultChangeTracking;
+        $this->DefaultDeleteRestrictions = $DefaultDeleteRestrictions;
+        $this->DefaultUpdateRestrictions = $DefaultUpdateRestrictions;
+        $this->DefaultInsertRestrictions = $DefaultInsertRestrictions;
+
         $this->version = $json['@attributes']['Version'];
 
-        foreach ($json['DataServices']['Schema'] as $item) {
-            $this->raw[$item['@attributes']['Namespace']] = $item;
+        // check array keys are numeric, then we have multiple schemas
+        if (array_keys($json['DataServices']['Schema']) === range(0, count($json['DataServices']['Schema']) - 1)) {
+            $json['DataServices']['Schema'] = array_merge(...$json['DataServices']['Schema']);
         }
+
+        $this->raw = $json['DataServices']['Schema'];
 
         $this->entity_types  = new Collection();
         $this->entity_sets   = new Collection();
@@ -52,20 +71,28 @@ class Schema
 
     protected function propagate()
     {
-        foreach ($this->raw['NAV.ComplexTypes']['ComplexType'] as $type) {
-            $this->complex_types[$type['@attributes']['Name']] = new ComplexType($type, $this);
+        if (isset($this->raw['ComplexType'])) {
+            foreach ($this->raw['ComplexType'] as $type) {
+                $this->complex_types[$type['@attributes']['Name']] = new ComplexType($type, $this);
+            }
         }
 
-        foreach ($this->raw['NAV']['EntityType'] as $type) {
-            $this->entity_types[$type['@attributes']['Name']] = new EntityType($type, $this);
+        if (isset($this->raw['EntityType'])) {
+            foreach ($this->raw['EntityType'] as $type) {
+                $this->entity_types[$type['@attributes']['Name']] = new EntityType($type, $this);
+            }
         }
 
-        foreach ($this->raw['NAV']['EntityContainer']['EntitySet'] as $set) {
-            $this->entity_sets[$set['@attributes']['Name']] = new EntitySet($set, $this);
+        if (isset($this->raw['EntityContainer']['EntitySet'])) {
+            foreach ($this->raw['EntityContainer']['EntitySet'] as $set) {
+                $this->entity_sets[$set['@attributes']['Name']] = new EntitySet($set, $this);
+            }
         }
 
-        foreach ($this->raw['NAV']['Action'] as $action) {
-            $this->actions[$action['@attributes']['Name']] = new Action($action, $this);
+        if (isset($this->raw['EntityContainer']['ActionImport'])) {
+            foreach ($this->raw['EntityContainer']['ActionImport'] as $action) {
+                $this->actions[$action['@attributes']['Name']] = new Action($action, $this);
+            }
         }
     }
 
@@ -118,7 +145,11 @@ class Schema
 
     public function getEntitySet(string $set)
     {
-        return $this->entity_sets[$set] ?? null;
+        $entitySet = $this->entity_sets[$set] ?? null;
+        if($entitySet === null) {
+            $entitySet = $this->entity_sets[lcfirst($set)] ?? null;
+        }
+        return $entitySet;
     }
 
     public function getEntitySetByType(string $type)
@@ -151,9 +182,7 @@ class Schema
             $type = $matches[1] ?? $type;
         }
 
-        $type = str_replace('Microsoft.NAV.', '', $type);
-        $type = str_replace('NAV.', '', $type);
-        $type = str_replace('ComplexTypes.', '', $type);
+        $type = str_replace(['Microsoft.NAV.', 'NAV.', 'ComplexTypes.','mscrm.', 'Microsoft.Dynamics.CRM.'], '', $type);
 
         return $type;
     }
@@ -199,7 +228,7 @@ class Schema
     public function propertyIs(string $model, string $property, string $attribute, $default = false)
     {
         return $this->overrides[$model]["properties"][$property][$attribute] ??
-               $this->overrides['__always']["properties"][$property][$attribute] ?? $default;
+            $this->overrides['__always']["properties"][$property][$attribute] ?? $default;
     }
 
     public function propertyIsGuarded(string $model, string $property, $default = false)
@@ -220,5 +249,25 @@ class Schema
     public function propertyIsNullable(string $model, string $property, $default = false)
     {
         return $this->propertyIs($model, $property, 'nullable', $default);
+    }
+
+    public function isDefaultChangeTracking(): bool
+    {
+        return $this->DefaultChangeTracking;
+    }
+
+    public function isDefaultDeleteRestrictions(): bool
+    {
+        return $this->DefaultDeleteRestrictions;
+    }
+
+    public function isDefaultUpdateRestrictions(): bool
+    {
+        return $this->DefaultUpdateRestrictions;
+    }
+
+    public function isDefaultInsertRestrictions(): bool
+    {
+        return $this->DefaultInsertRestrictions;
     }
 }

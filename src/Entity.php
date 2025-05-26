@@ -62,7 +62,7 @@ class Entity implements \ArrayAccess, \JsonSerializable, Jsonable, Arrayable
     /** @return Entity */
     public static function make(array $attributes, Builder $query, EntityType $type)
     {
-        $class = ClassMap::map($type);
+        $class = $query->getSdk()->getClassMap()->map($type);
 
         if (!class_exists($class)) {
             $class = Entity::class;
@@ -110,6 +110,22 @@ class Entity implements \ArrayAccess, \JsonSerializable, Jsonable, Arrayable
                 $this->relations[$property->name] = $property->convert($attribute, $this->query->clone());
             } elseif ($key === '@odata.etag') {
                 $this->etag = $attribute;
+            }
+            elseif (str_contains($key,'@odata.mediaReadLink') ) {
+                $attributeName = str_replace('@odata.mediaReadLink', '', $key);
+                $mediaReadLink = $attribute;
+                $this->attributes[$attributeName] = function () use ($mediaReadLink) {
+                    try{
+                        $response = $this->query->getSdk()->client->get($mediaReadLink);
+                        return $response->getBody();
+                    }
+                    catch (\Throwable $e) {
+                        return null;
+                    }
+                };
+            }
+            elseif (str_contains($key,'@odata.bind') ) {
+                $this->attributes[$key] = $attribute;
             }
         }
     }
@@ -182,11 +198,27 @@ class Entity implements \ArrayAccess, \JsonSerializable, Jsonable, Arrayable
         } else {
             $this->validate();
 
-            $response = $this->query->post($this->attributes);
+            $attributes = $this->attributes;
+            foreach ($this->relations as $key => $relation) {
+                if ($relation instanceof EntityCollection) {
+                    $relation = array_map(static function ($item) {
+                        if ( is_array($item) && array_key_exists('$entity_type', $item)) {
+                            unset($item['$entity_type']);
+                        }
+                        return $item;
+                    }, $relation->toArray());
+                }
+                if ( $relation instanceof self) {
+                    $relation = $relation->attributes;
+                }
+                $attributes[$key] = $relation;
+            }
+            $response = $this->query->post($attributes);
 
-            $this->setAttributes($response);
-            $this->query->navigateTo($entity_set->name ?? Pluralizer::plural($this->type->schema_type), $this->identifiers());
-
+            if(!empty($response)) {
+                $this->setAttributes($response);
+                $this->query->navigateTo($entity_set->name ?? Pluralizer::plural($this->type->schema_type), $this->identifiers());
+            }
         }
 
         $this->dirty = [];
@@ -315,6 +347,9 @@ class Entity implements \ArrayAccess, \JsonSerializable, Jsonable, Arrayable
     public function offsetGet($offset)
     {
         if ($this->getEntityType()->propertyExists($offset)) {
+            if( $this->attributes[$offset] instanceof \Closure ) {
+                return $this->attributes[$offset]();
+            }
             return $this->attributes[$offset] ?? null;
         } elseif ($this->getEntityType()->relationExists($offset)) {
             return $this->fetchRelation($offset);
@@ -413,7 +448,7 @@ class Entity implements \ArrayAccess, \JsonSerializable, Jsonable, Arrayable
     {
         $keys = [];
         foreach ($this->getEntityType()->keys as $key) {
-            $keys = $this->{$key};
+            $keys[] = $this->{$key};
         }
 
         return $keys;
